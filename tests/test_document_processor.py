@@ -6,8 +6,8 @@ import os
 import tempfile
 from unittest.mock import MagicMock, patch
 
-from document_qa_telegram_bot.core.session_manager import SessionManager
-from document_qa_telegram_bot.services.document_processor import DocumentProcessor
+from core.session_manager import SessionManager
+from services.document_processor import DocumentProcessor
 
 
 class TestDocumentProcessor(unittest.TestCase):

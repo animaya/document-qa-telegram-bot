@@ -20,9 +20,9 @@ from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 # Import local modules
-from document_qa_bot.core.session_manager import SessionManager
-from document_qa_bot.services.document_processor import DocumentProcessor
-from document_qa_bot.services.contextual_rag import ContextualRAG
+from core.session_manager import SessionManager
+from services.document_processor import DocumentProcessor
+from services.contextual_rag import ContextualRAG
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -34,18 +34,21 @@ class DocumentQABot:
     """
     
     def __init__(
-        self,
-        telegram_token: str,
-        anthropic_api_key: str,
-        data_dir: str = "data",
-        embedding_provider: str = "GEMINI",
-        model: str = "claude-3-haiku-20240307",
-        max_chunk_size: int = 500,
-        chunk_overlap: int = 100,
-        num_chunks_retrieve: int = 20,
-        num_rerank: int = 150,
-        use_reranking: bool = True
-    ):
+    self,
+    telegram_token: str,
+    anthropic_api_key: str,
+    data_dir: str = "data",
+    embedding_provider: str = "GEMINI",
+    model: str = "claude-3-haiku-20240307",
+    max_chunk_size: int = 500,
+    chunk_overlap: int = 100,
+    num_chunks_retrieve: int = 20,
+    num_rerank: int = 150,
+    use_reranking: bool = True,
+    batch_size: int = 3,
+    anthropic_rate: float = 0.5,
+    embedding_rate: float = 1.0
+):
         """
         Initialize the Document QA bot.
         
@@ -75,12 +78,15 @@ class DocumentQABot:
         # Initialize components
         self.session_manager = SessionManager()
         self.document_processor = DocumentProcessor(
-            session_manager=self.session_manager,
-            anthropic_api_key=anthropic_api_key,
-            embedding_provider=embedding_provider,
-            model=model,
-            max_chunk_size=max_chunk_size,
-            chunk_overlap=chunk_overlap
+              session_manager=self.session_manager,
+              anthropic_api_key=anthropic_api_key,
+              embedding_provider=embedding_provider,
+              model=model,
+              max_chunk_size=max_chunk_size,
+              chunk_overlap=chunk_overlap,
+              batch_size=batch_size,
+              anthropic_rate=anthropic_rate,
+    
         )
         self.contextual_rag = ContextualRAG(
             session_manager=self.session_manager,
@@ -96,8 +102,10 @@ class DocumentQABot:
         self.processing_status = {}  # Map of document_id to processing status
         
         # Initialize the Telegram application
-        self.application = Application.builder().token(telegram_token).build()
-        
+        self.application = (Application.builder().token(telegram_token).connect_timeout(connection_timeout)
+        .read_timeout(connection_timeout)
+        .write_timeout(connection_timeout).build())
+        self.max_retries = connection_retries
         # Register handlers
         self.register_handlers()
         
@@ -107,6 +115,7 @@ class DocumentQABot:
     def register_handlers(self) -> None:
         """Register message handlers for the Telegram bot."""
         # Command handlers
+      
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
@@ -120,12 +129,29 @@ class DocumentQABot:
         self.application.add_error_handler(self.error_handler)
     
     async def start(self) -> None:
-        """Start the bot."""
+        """Start the bot with retry logic."""
         logger.info("Starting the bot...")
-        await self.application.initialize()
-        await self.application.start()
-        await self.application.updater.start_polling()
-        logger.info("Bot started!")
+        
+        retry_count = 0
+    
+        while retry_count < self.max_retries:
+            try:
+                await self.application.initialize()
+                await self.application.start()
+                await self.application.updater.start_polling()
+                logger.info("Bot started successfully!")
+                return
+            except telegram.error.TimedOut as e:
+                retry_count += 1
+                wait_time = 5 * retry_count  # Incremental backoff
+                logger.warning(f"Connection timed out. Retrying in {wait_time} seconds (attempt {retry_count}/{self.max_retries})...")
+                logger.debug(f"Error details: {str(e)}")
+                await asyncio.sleep(wait_time)
+            except Exception as e:
+                logger.error(f"Failed to start bot: {str(e)}")
+                raise
+        logger.error("Failed to start the bot after multiple attempts. Please check your network connection and Telegram token.")
+        raise ConnectionError("Could not connect to Telegram API after multiple attempts")
     
     async def stop(self) -> None:
         """Stop the bot."""

@@ -19,16 +19,215 @@ from anthropic import Anthropic
 import numpy as np
 
 # Import local modules
-from document_qa_bot.core.document import Document
-from document_qa_bot.core.chunk import Chunk
-from document_qa_bot.core.session_manager import SessionManager
-from document_qa_bot.services.embedding_service import EmbeddingService
-
+from core.document import Document
+from core.chunk import Chunk
+from core.session_manager import SessionManager
+from services.embedding_service import EmbeddingService
+from services.rate_limiter import RateLimitedClient
+import asyncio
+import random
 # Setup logging
 logger = logging.getLogger(__name__)
 
+# Add these imports
+
 
 class DocumentProcessor:
+    def __init__(
+        self, 
+        session_manager: SessionManager, 
+        anthropic_api_key: str,
+        embedding_provider: str = "GEMINI",
+        model: str = "claude-3-haiku-20240307", 
+        max_chunk_size: int = 500, 
+        chunk_overlap: int = 100,
+        batch_size: int = 3,
+        anthropic_rate: float = 0.5  # 1 request per 2 seconds on average
+    ):
+        """Initialize with existing parameters plus rate limiting params."""
+        self.session_manager = session_manager
+        self.anthropic_client = Anthropic(api_key=anthropic_api_key)
+        self.embedding_service = EmbeddingService(embedding_provider)
+        self.model = model
+        self.max_chunk_size = max_chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.batch_size = batch_size
+        
+        # Add rate limiter for API calls
+        self.rate_limited_client = RateLimitedClient(
+            name="anthropic",
+            rate=anthropic_rate,
+            capacity=10
+        )
+        # Add specific service rate limiters
+        self.rate_limited_client.add_service_limiter(
+            service="context_generation", 
+            rate=0.33,  # 1 request per 3 seconds
+            capacity=5
+        )
+
+    async def _process_chunks(self, chunks: List[Chunk], full_document: str) -> List[Chunk]:
+        """
+        Process chunks in batches with adaptive throttling.
+        
+        Args:
+            chunks: List of Chunk objects to process
+            full_document: Full text of the document for context generation
+            
+        Returns:
+            List of processed Chunk objects
+        """
+        all_processed_chunks = []
+        total_batches = (len(chunks) + self.batch_size - 1) // self.batch_size
+        
+        logger.info(f"Processing {len(chunks)} chunks in {total_batches} batches")
+        
+        # Shuffle chunks to spread errors more evenly if there are troublesome chunks
+        shuffled_chunks = chunks.copy()
+        random.shuffle(shuffled_chunks)
+        
+        for i in range(0, len(shuffled_chunks), self.batch_size):
+            batch = shuffled_chunks[i:i+self.batch_size]
+            batch_num = i // self.batch_size + 1
+            
+            logger.info(f"Processing batch {batch_num}/{total_batches} with {len(batch)} chunks")
+            
+            # Process chunks in this batch with some parallelism
+            tasks = []
+            for chunk in batch:
+                tasks.append(self._process_chunk(chunk, full_document))
+            
+            # Process batch and collect results
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Handle successful results and log errors
+            success_count = 0
+            for j, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    logger.warning(f"Error processing chunk {batch[j].chunk_id}: {str(result)}")
+                elif result is not None:
+                    all_processed_chunks.append(result)
+                    success_count += 1
+            
+            # Adjust wait time between batches based on success rate
+            success_rate = success_count / len(batch) if batch else 1.0
+            if i + self.batch_size < len(shuffled_chunks):
+                # Base wait time of 5 seconds, increase if we're getting errors
+                wait_time = 5 * (2.0 - success_rate)  # 5-10s range based on success
+                logger.info(f"Batch {batch_num} success rate: {success_rate:.2f}, waiting {wait_time:.1f}s before next batch")
+                await asyncio.sleep(wait_time)
+        
+        logger.info(f"Successfully processed {len(all_processed_chunks)} of {len(chunks)} chunks")
+        return all_processed_chunks
+
+    async def _process_chunk(self, chunk: Chunk, full_document: str) -> Optional[Chunk]:
+        """
+        Process a single chunk with rate limiting.
+        
+        Args:
+            chunk: Chunk object to process
+            full_document: Full text of the document for context generation
+            
+        Returns:
+            Processed Chunk object or None if processing failed
+        """
+        try:
+            # Add context to the chunk
+            context = await self._generate_context(chunk.text_content, full_document)
+            if context:
+                chunk.add_context(context)
+            else:
+                # If context generation failed, use a simple context
+                simple_context = f"This is chunk {chunk.chunk_index} from the document."
+                chunk.add_context(simple_context)
+            
+            # Create embedding for the contextualized content
+            embedding = await self._create_embedding(chunk.contextualized_content)
+            if embedding:
+                chunk.add_embedding(embedding)
+            else:
+                logger.warning(f"Failed to create embedding for chunk {chunk.chunk_id}")
+                return None
+            
+            return chunk
+        except Exception as e:
+            logger.error(f"Error processing chunk {chunk.chunk_id}: {e}")
+            return None
+
+    async def _generate_context(self, chunk_text: str, full_document: str) -> Optional[str]:
+        """
+        Generate contextual information for a chunk using rate-limited API calls.
+        
+        Args:
+            chunk_text: Text content of the chunk
+            full_document: Full text of the document
+            
+        Returns:
+            Generated contextual text or None if generation failed
+        """
+        try:
+            # Prepare the prompt for context generation
+            prompt = f"""
+<document>
+{full_document[:10000]}...
+</document>
+
+Here is the chunk we want to situate within the whole document:
+<chunk>
+{chunk_text}
+</chunk>
+
+Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Answer only with the succinct context and nothing else.
+"""
+            
+            # Define the API call as a function to be rate-limited
+            async def call_anthropic_api():
+                response = self.anthropic_client.messages.create(
+                    model=self.model,
+                    max_tokens=500,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                return response.content[0].text.strip()
+            
+            # Call API with rate limiting and retries
+            return await self.rate_limited_client.call_with_retry(
+                call_anthropic_api,
+                service="context_generation",
+                max_retries=3,
+                initial_backoff=2.0
+            )
+        
+        except Exception as e:
+            logger.error(f"Error generating context: {e}")
+            return None
+
+    async def _create_embedding(self, text: str) -> Optional[List[float]]:
+        """
+        Create embedding for text with rate limiting.
+        
+        Args:
+            text: Text to embed
+            
+        Returns:
+            Vector embedding or None if creation failed
+        """
+        try:
+            # Wrap embedding creation with rate limiting
+            async def get_embedding():
+                return await self.embedding_service.create_embedding(text, "document")
+            
+            return await self.rate_limited_client.call_with_retry(
+                get_embedding,
+                service="embedding_generation",
+                max_retries=3,
+                initial_backoff=1.0
+            )
+        
+        except Exception as e:
+            logger.error(f"Error creating embedding: {e}")
+            return None
     """
     Handles the extraction, chunking, and processing of documents.
     """

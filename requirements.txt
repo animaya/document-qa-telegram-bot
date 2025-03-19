@@ -10,3 +10,5 @@ voyageai>=0.1.9  # Optional, for embeddings
 google-generativeai>=0.3.1  # Optional, for embeddings
 openai>=1.5.0  # Optional, for embeddings
 pydantic>=2.0.0
+python-telegram-bot
+python-dotenv

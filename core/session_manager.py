@@ -5,9 +5,9 @@ import logging
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
-from document-qa-telegram-bot.core.session import Session
-from document-qa-telegram-bot.core.document import Document
-from document-qa-telegram-bot.core.chunk import Chunk
+from core.session import Session
+from core.document import Document
+from core.chunk import Chunk
 
 # Setup logging
 logger = logging.getLogger(__name__)

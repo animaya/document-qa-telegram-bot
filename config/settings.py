@@ -22,6 +22,9 @@ def get_settings() -> Dict[str, Any]:
         "num_chunks_retrieve": int(os.environ.get("NUM_CHUNKS_RETRIEVE", "20")),
         "num_rerank": int(os.environ.get("NUM_RERANK", "150")),
         "use_reranking": os.environ.get("USE_RERANKING", "1") == "1",
+        "batch_size": int(os.environ.get("BATCH_SIZE", "3")),
+        "anthropic_rate": float(os.environ.get("ANTHROPIC_RATE", "0.5")),
+        "embedding_rate": float(os.environ.get("EMBEDDING_RATE", "1.0")),
     }
 
 

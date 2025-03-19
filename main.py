@@ -26,11 +26,12 @@ import asyncio
 import signal
 import argparse
 from typing import Optional
+from dotenv import load_dotenv
 
 # Import local modules
-from document_qa_bot.bot.telegram_bot import DocumentQABot
-from document_qa_bot.config.settings import get_settings, validate_settings
-
+from bot.telegram_bot import DocumentQABot
+from config.settings import get_settings, validate_settings
+load_dotenv()
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -98,6 +99,27 @@ def parse_args():
         action="store_true",
         help="Disable reranking"
     )
+
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=3,
+        help="Number of chunks to process in each batch (default: 3)"
+    )
+    
+    parser.add_argument(
+        "--anthropic-rate",
+        type=float,
+        default=0.5,
+        help="Anthropic API rate limit in requests per second (default: 0.5)"
+    )
+    
+    parser.add_argument(
+        "--embedding-rate",
+        type=float,
+        default=1.0,
+        help="Embedding API rate limit in requests per second (default: 1.0)"
+    )
     
     return parser.parse_args()
 
@@ -157,7 +179,9 @@ async def main():
         chunk_overlap=settings["chunk_overlap"],
         num_chunks_retrieve=settings["num_chunks_retrieve"],
         num_rerank=settings["num_rerank"],
-        use_reranking=settings["use_reranking"]
+        use_reranking=settings["use_reranking"],
+        batch_size=args.batch_size,
+        anthropic_rate=args.anthropic_rate
     )
     
     # Register signal handlers for graceful shutdown

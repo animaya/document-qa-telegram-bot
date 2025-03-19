@@ -10,12 +10,15 @@ import logging
 import asyncio
 from typing import List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
+from services.rate_limiter import RateLimitedClient
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
 
 class EmbeddingService:
+    """Service for generating embeddings from different providers."""
+    
     """Service for generating embeddings from different providers."""
     
     def __init__(self, provider: str = "GEMINI"):
@@ -27,6 +30,13 @@ class EmbeddingService:
         """
         self.provider = provider
         self.client = self._initialize_client()
+        
+        # Add rate limiters for each embedding provider
+        self.rate_limited_client = RateLimitedClient(
+            name=f"embeddings_{provider.lower()}",
+            rate=1.0,  # 1 request per second
+            capacity=5
+        )
     
     def _initialize_client(self) -> Any:
         """
@@ -66,7 +76,7 @@ class EmbeddingService:
     
     async def create_embedding(self, text: str, type_hint: str = "document") -> Optional[List[float]]:
         """
-        Create an embedding for the text using the configured provider.
+        Create an embedding for the text using the configured provider with rate limiting.
         
         Args:
             text: Text to create embedding for
@@ -76,10 +86,10 @@ class EmbeddingService:
             Vector embedding as a list of floats, or None if creation failed
         """
         try:
-            # Different handling based on embedding provider
-            if self.provider == "GEMINI":
-                # Run in a thread pool to avoid blocking the event loop
-                def get_embedding():
+            # Define provider-specific embedding functions
+            
+            async def get_gemini_embedding():
+                def execute():
                     task_type = "retrieval_document" if type_hint == "document" else "retrieval_query"
                     result = self.client.embed_content(
                         model="models/embedding-001",
@@ -90,12 +100,10 @@ class EmbeddingService:
                 
                 loop = asyncio.get_event_loop()
                 with ThreadPoolExecutor() as pool:
-                    embedding = await loop.run_in_executor(pool, get_embedding)
-                return embedding
+                    return await loop.run_in_executor(pool, execute)
             
-            elif self.provider == "VOYAGE":
-                # Run in a thread pool to avoid blocking the event loop
-                def get_embedding():
+            async def get_voyage_embedding():
+                def execute():
                     input_type = "document" if type_hint == "document" else "query"
                     response = self.client.embed(
                         texts=[text],
@@ -106,12 +114,10 @@ class EmbeddingService:
                 
                 loop = asyncio.get_event_loop()
                 with ThreadPoolExecutor() as pool:
-                    embedding = await loop.run_in_executor(pool, get_embedding)
-                return embedding
+                    return await loop.run_in_executor(pool, execute)
             
-            elif self.provider == "OPENAI":
-                # Run in a thread pool to avoid blocking the event loop
-                def get_embedding():
+            async def get_openai_embedding():
+                def execute():
                     response = self.client.embeddings.create(
                         model="text-embedding-3-small",
                         input=text
@@ -120,11 +126,24 @@ class EmbeddingService:
                 
                 loop = asyncio.get_event_loop()
                 with ThreadPoolExecutor() as pool:
-                    embedding = await loop.run_in_executor(pool, get_embedding)
-                return embedding
+                    return await loop.run_in_executor(pool, execute)
             
+            # Choose the appropriate embedding function based on provider
+            if self.provider == "GEMINI":
+                func = get_gemini_embedding
+            elif self.provider == "VOYAGE":
+                func = get_voyage_embedding
+            elif self.provider == "OPENAI":
+                func = get_openai_embedding
             else:
                 raise ValueError(f"Unsupported embedding provider: {self.provider}")
+            
+            # Call with rate limiting and retries
+            return await self.rate_limited_client.call_with_retry(
+                func,
+                max_retries=3,
+                initial_backoff=1.0
+            )
         
         except Exception as e:
             logger.error(f"Error creating embedding: {e}")
