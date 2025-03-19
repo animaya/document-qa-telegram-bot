@@ -1,0 +1,12 @@
+anthropic>=0.20.0
+python-telegram-bot>=20.0
+PyPDF2>=3.0.0
+nltk>=3.8.1
+rank-bm25>=0.2.2
+faiss-cpu>=1.7.4
+numpy>=1.24.0
+cohere>=4.37.0  # Optional, for reranking
+voyageai>=0.1.9  # Optional, for embeddings
+google-generativeai>=0.3.1  # Optional, for embeddings
+openai>=1.5.0  # Optional, for embeddings
+pydantic>=2.0.0
