@@ -20,16 +20,13 @@ from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 # Import local modules
-from document_qa_telegram_bot import SessionManager
-from document_processor import DocumentProcessor
-from contextual_rag import ContextualRAG
+from document_qa_bot.core.session_manager import SessionManager
+from document_qa_bot.services.document_processor import DocumentProcessor
+from document_qa_bot.services.contextual_rag import ContextualRAG
 
 # Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
+
 
 class DocumentQABot:
     """
@@ -349,3 +346,5 @@ class DocumentQABot:
         """Periodically clean up expired sessions."""
         self.session_manager.cleanup_expired_sessions()
         logger.info("Cleaned up expired sessions")
+
+    ## Directory Structure

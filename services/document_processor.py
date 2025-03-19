@@ -19,11 +19,14 @@ from anthropic import Anthropic
 import numpy as np
 
 # Import local modules
-# Assuming the core classes are in a module called document_qa_telegram_bot
-from document_qa_telegram_bot import Document, Chunk, SessionManager
+from document_qa_bot.core.document import Document
+from document_qa_bot.core.chunk import Chunk
+from document_qa_bot.core.session_manager import SessionManager
+from document_qa_bot.services.embedding_service import EmbeddingService
 
 # Setup logging
 logger = logging.getLogger(__name__)
+
 
 class DocumentProcessor:
     """
@@ -52,49 +55,10 @@ class DocumentProcessor:
         """
         self.session_manager = session_manager
         self.anthropic_client = Anthropic(api_key=anthropic_api_key)
-        self.embedding_provider = embedding_provider
+        self.embedding_service = EmbeddingService(embedding_provider)
         self.model = model
         self.max_chunk_size = max_chunk_size
         self.chunk_overlap = chunk_overlap
-        
-        # Initialize embedding client based on provider
-        self.embedding_client = self._initialize_embedding_client()
-    
-    def _initialize_embedding_client(self) -> Any:
-        """
-        Initialize the appropriate embedding client based on the provider.
-        
-        Returns:
-            Initialized embedding client
-        """
-        if self.embedding_provider == "GEMINI":
-            # Initialize Gemini embedding client
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-                return genai
-            except ImportError:
-                logger.warning("Gemini SDK not installed. Falling back to OpenAI embeddings.")
-                self.embedding_provider = "OPENAI"
-        
-        if self.embedding_provider == "VOYAGE":
-            # Initialize Voyage embedding client
-            try:
-                import voyageai
-                return voyageai.Client(api_key=os.environ.get("VOYAGE_API_KEY"))
-            except ImportError:
-                logger.warning("Voyage SDK not installed. Falling back to OpenAI embeddings.")
-                self.embedding_provider = "OPENAI"
-        
-        # Default to OpenAI embeddings
-        if self.embedding_provider == "OPENAI":
-            try:
-                from openai import OpenAI
-                return OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-            except ImportError:
-                raise ImportError("No embedding provider available. Please install either 'google-generativeai', 'voyageai', or 'openai'.")
-        
-        raise ValueError(f"Unsupported embedding provider: {self.embedding_provider}")
     
     async def process_document(self, document: Document) -> bool:
         """
@@ -260,7 +224,7 @@ class DocumentProcessor:
                 chunk.add_context(simple_context)
             
             # Create embedding for the contextualized content
-            embedding = await self._create_embedding(chunk.contextualized_content)
+            embedding = await self.embedding_service.create_embedding(chunk.contextualized_content, "document")
             if embedding:
                 chunk.add_embedding(embedding)
             else:
@@ -287,14 +251,14 @@ class DocumentProcessor:
             # Prepare the prompt for context generation
             # Following Anthropic's recommendation for contextualizing chunks
             prompt = f"""
-<document>
+
 {full_document[:10000]}...
-</document>
+
 
 Here is the chunk we want to situate within the whole document:
-<chunk>
+
 {chunk_text}
-</chunk>
+
 
 Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Answer only with the succinct context and nothing else.
 """
@@ -313,66 +277,4 @@ Please give a short succinct context to situate this chunk within the overall do
         
         except Exception as e:
             logger.error(f"Error generating context: {e}")
-            return None
-    
-    async def _create_embedding(self, text: str) -> Optional[List[float]]:
-        """
-        Create an embedding for the text using the configured provider.
-        
-        Args:
-            text: Text to create embedding for
-            
-        Returns:
-            Vector embedding as a list of floats, or None if creation failed
-        """
-        try:
-            # Different handling based on embedding provider
-            if self.embedding_provider == "GEMINI":
-                # Run in a thread pool to avoid blocking the event loop
-                def get_embedding():
-                    result = self.embedding_client.embed_content(
-                        model="models/embedding-001",
-                        content=text,
-                        task_type="retrieval_document"
-                    )
-                    return result["embedding"]
-                
-                loop = asyncio.get_event_loop()
-                with ThreadPoolExecutor() as pool:
-                    embedding = await loop.run_in_executor(pool, get_embedding)
-                return embedding
-            
-            elif self.embedding_provider == "VOYAGE":
-                # Run in a thread pool to avoid blocking the event loop
-                def get_embedding():
-                    response = self.embedding_client.embed(
-                        texts=[text],
-                        model="voyage-large-2"
-                    )
-                    return response.embeddings[0]
-                
-                loop = asyncio.get_event_loop()
-                with ThreadPoolExecutor() as pool:
-                    embedding = await loop.run_in_executor(pool, get_embedding)
-                return embedding
-            
-            elif self.embedding_provider == "OPENAI":
-                # Run in a thread pool to avoid blocking the event loop
-                def get_embedding():
-                    response = self.embedding_client.embeddings.create(
-                        model="text-embedding-3-small",
-                        input=text
-                    )
-                    return response.data[0].embedding
-                
-                loop = asyncio.get_event_loop()
-                with ThreadPoolExecutor() as pool:
-                    embedding = await loop.run_in_executor(pool, get_embedding)
-                return embedding
-            
-            else:
-                raise ValueError(f"Unsupported embedding provider: {self.embedding_provider}")
-        
-        except Exception as e:
-            logger.error(f"Error creating embedding: {e}")
             return None
