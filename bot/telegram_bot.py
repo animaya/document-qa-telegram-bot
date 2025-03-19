@@ -47,7 +47,9 @@ class DocumentQABot:
     use_reranking: bool = True,
     batch_size: int = 3,
     anthropic_rate: float = 0.5,
-    embedding_rate: float = 1.0
+    embedding_rate: float = 1.0,
+    connection_timeout: float = 30.0,  # Add this parameter
+    connection_retries: int = 3        # Add this parameter
 ):
         """
         Initialize the Document QA bot.
@@ -74,6 +76,9 @@ class DocumentQABot:
         self.num_chunks_retrieve = num_chunks_retrieve
         self.num_rerank = num_rerank
         self.use_reranking = use_reranking
+        self.batch_size = batch_size
+        self.connection_timeout = connection_timeout
+        self.connection_retries = connection_retries
         
         # Initialize components
         self.session_manager = SessionManager()
@@ -102,9 +107,12 @@ class DocumentQABot:
         self.processing_status = {}  # Map of document_id to processing status
         
         # Initialize the Telegram application
-        self.application = (Application.builder().token(telegram_token).connect_timeout(connection_timeout)
-        .read_timeout(connection_timeout)
-        .write_timeout(connection_timeout).build())
+        self.application = (Application.builder()
+        .token(telegram_token)
+        .connect_timeout(self.connection_timeout)
+        .read_timeout(self.connection_timeout)
+        .write_timeout(self.connection_timeout)
+        .build())
         self.max_retries = connection_retries
         # Register handlers
         self.register_handlers()
